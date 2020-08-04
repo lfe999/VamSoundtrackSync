@@ -1,4 +1,5 @@
 // #define LFE_DEBUG
+// #define LFE_TRACE
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -249,16 +250,13 @@ namespace LFE {
                 return;
             }
 
-            if(StopAudioIfAnimationStopped.val) {
-                if(!Source.isPlaying) {
-                    if(Source.time > 0) {
-                        Source.UnPause();
-                    }
-                    else {
-                        Source.time = TargetAudioSourceTime();
-                        // Source.Play();
-                        return;
-                    }
+            if(!Source.isPlaying) {
+                if(StopAudioIfAnimationStopped.val && Source.time > 0) {
+                    Source.UnPause();
+                }
+                else {
+                    Source.time = 0;
+                    return;
                 }
             }
 
@@ -296,14 +294,24 @@ namespace LFE {
         }
 
         private float TargetAudioSourceTime() {
-            var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
-            if(Source.loop) {
-                return Mathf.Max(0, (animationTime - SoundtrackOffset.val) % Source.clip.length);
+            var target = 0f;
 
+            var offsetAnimationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter() - SoundtrackOffset.val;
+            if(offsetAnimationTime < 0) {
+                target = 0f;
             }
             else {
-                return Mathf.Max(0, Mathf.Min((animationTime - SoundtrackOffset.val), Source.clip.length));
+                if(Source.loop) {
+                    target = offsetAnimationTime % Source.clip.length;
+                }
+                else {
+                    target = Mathf.Min(offsetAnimationTime, Source.clip.length);
+                }
             }
+#if LFE_TRACE
+            SuperController.LogMessage($"TargetAudioSourceTime = {target} offsetAnimationTime = {offsetAnimationTime}");
+#endif
+            return target;
         }
 
         private float CurrentDrift() {
