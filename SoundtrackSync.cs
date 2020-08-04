@@ -1,3 +1,4 @@
+// #define LFE_DEBUG
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -32,8 +33,8 @@ namespace LFE {
         private JSONStorableBool StopAudioIfAnimationStopped;
         private UIDynamicTextField DebugTextUi;
 
-        float originalPitch;
-        float originalTimescale;
+        float originalPitch = 0f;
+        float originalTimescale = 0f;
 
         public bool IsUiActive() {
             return DebugTextUi?.isActiveAndEnabled ?? false;
@@ -109,10 +110,9 @@ namespace LFE {
         float debugCounter = 0f;
 
         private void HandleAudioPitch() {
-            var audioTime = Source.time;
             var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
 
-            var currentDrift = audioTime - animationTime + SoundtrackOffset.val;
+            var currentDrift = CurrentDrift();
             var currentDriftAbsolute = Math.Abs(currentDrift);
             var previousDriftAbsolute = Math.Abs(previousDrift);
 
@@ -122,6 +122,9 @@ namespace LFE {
             bool shouldChangeAdjustmentStrength = undergoingAdjustment && currentDriftAbsolute != previousDriftAbsolute;
             if(shouldStartAdjustment) {
                 var adjustBy = Math.Sign(currentDrift) * -1 * AdjustmentAmount * Time.deltaTime;
+#if LFE_DEBUG
+                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+#endif
 
                 currentAdjustment += adjustBy;
                 Source.pitch += adjustBy;
@@ -130,6 +133,9 @@ namespace LFE {
             else if(shouldStopAdjustment) {
                 Source.pitch = originalPitch;
                 currentAdjustment = 0;
+#if LFE_DEBUG
+                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
+#endif
             }
             else if(shouldChangeAdjustmentStrength) {
                 var adjustBy = Math.Sign(currentDrift) * -1 * AdjustmentAmount * Time.deltaTime;
@@ -137,22 +143,25 @@ namespace LFE {
                     // things are getting worse! - increase our fixing
                     currentAdjustment += adjustBy;
                     Source.pitch += adjustBy;
+#if LFE_DEBUG
+                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+#endif
                 }
             }
             UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
         }
 
         private void HandleAudioTimeJump() {
-            var audioTime = Source.time;
             var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
 
-            var currentDrift = audioTime - animationTime + SoundtrackOffset.val;
+            var currentDrift = CurrentDrift();
             var currentDriftAbsolute = Math.Abs(currentDrift);
+
             if(currentDriftAbsolute >= DriftCorrectIfOver * 0.5f) {
-                var newTime = animationTime - SoundtrackOffset.val;
-                if(newTime < 0) {
-                    newTime = 0;
-                }
+                var newTime = TargetAudioSourceTime();
+#if LFE_DEBUG
+                SuperController.LogMessage($"AUDIOJUMP audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} (over {DriftCorrectIfOver * 0.5f}) newTime = {newTime}");
+#endif
                 Source.time = newTime;
                 currentAdjustment = 0;
             }
@@ -160,10 +169,9 @@ namespace LFE {
         }
 
         private void HandleTimescale() {
-            var audioTime = Source.time;
             var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
 
-            var currentDrift = audioTime - animationTime + SoundtrackOffset.val;
+            var currentDrift = CurrentDrift();
             var currentDriftAbsolute = Math.Abs(currentDrift);
             var previousDriftAbsolute = Math.Abs(previousDrift);
 
@@ -173,6 +181,9 @@ namespace LFE {
             bool shouldChangeAdjustmentStrength = undergoingAdjustment && currentDriftAbsolute != previousDriftAbsolute;
             if(shouldStartAdjustment) {
                 var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
+#if LFE_DEBUG
+                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+#endif
 
                 currentAdjustment += adjustBy;
                 TimeControl.singleton.currentScale += adjustBy;
@@ -181,6 +192,9 @@ namespace LFE {
             else if(shouldStopAdjustment) {
                 TimeControl.singleton.currentScale = originalTimescale;
                 currentAdjustment = 0;
+#if LFE_DEBUG
+                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
+#endif
             }
             else if(shouldChangeAdjustmentStrength) {
                 var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
@@ -188,6 +202,9 @@ namespace LFE {
                     // things are getting worse!
                     currentAdjustment += adjustBy;
                     TimeControl.singleton.currentScale += adjustBy;
+#if LFE_DEBUG
+                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+#endif
                 }
             }
             UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
@@ -232,17 +249,20 @@ namespace LFE {
                 return;
             }
 
-            if(!Source.isPlaying) {
-                if(StopAudioIfAnimationStopped.val && Source.time > 0) {
-                    Source.UnPause();
-                }
-                else {
-                    Source.time = 0;
-                    return;
+            if(StopAudioIfAnimationStopped.val) {
+                if(!Source.isPlaying) {
+                    if(Source.time > 0) {
+                        Source.UnPause();
+                    }
+                    else {
+                        Source.time = TargetAudioSourceTime();
+                        // Source.Play();
+                        return;
+                    }
                 }
             }
 
-            var currentDrift = audioTime - animationTime + SoundtrackOffset.val;
+            var currentDrift = CurrentDrift();
 
             if(JumpAudioIfTooFar.val && Math.Abs(currentDrift) > ForceJumpAudioTimeIfOver) {
                 HandleAudioTimeJump();
@@ -268,6 +288,26 @@ namespace LFE {
                 Source.pitch = originalPitch;
             }
             TimeControl.singleton.currentScale = originalTimescale;
+
+            previousAnimationTime = -1;
+            currentAdjustment = 0f;
+            previousDrift = 0f;
+            debugCounter = 0f;
+        }
+
+        private float TargetAudioSourceTime() {
+            var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
+            if(Source.loop) {
+                return Mathf.Max(0, (animationTime - SoundtrackOffset.val) % Source.clip.length);
+
+            }
+            else {
+                return Mathf.Max(0, Mathf.Min((animationTime - SoundtrackOffset.val), Source.clip.length));
+            }
+        }
+
+        private float CurrentDrift() {
+            return Source.time - TargetAudioSourceTime();
         }
 
         private void OnDestroy() {
