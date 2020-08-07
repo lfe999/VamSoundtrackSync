@@ -19,9 +19,9 @@ namespace LFE
             {
                 if (_sourceCached == null)
                 {
-                    SuperController.LogMessage($"cache miss");
                     var selectedUid = SyncWithAudioPlayingThrough.val;
-                    if(!string.IsNullOrEmpty(selectedUid)) {
+                    if (!string.IsNullOrEmpty(selectedUid))
+                    {
                         var atom = SuperController.singleton.GetAtomByUid(selectedUid);
                         if (atom != null)
                         {
@@ -82,13 +82,17 @@ namespace LFE
 
             var instructions =
                 $"Keep a <b>Scene Animation</b> in sync with an <b>AudioSource</b> soundtrack - good if you have some performance issues making things go out of sync.\n\n" +
-                $"Add this plugin to the <b>AudioSource</b> or <b>RhythmAudioSource</b> atom that will be playing your soundtrack.\n\n" +
-                $"This assumes that you have some soundtrack audio that starts at the beginning of your Scene Animation (no offset supported yet).\n\n" +
-                $"Strategies:\n" +
+                $"Make sure that you have some soundtrack audio Play event in a trigger in your <b>Scene Animation</b>.\n\n" +
+                $"Add this plugin to any atom in the scene. It will try to find the longest audio file in your <b>Scene Animation</b> and set the <b>Soundtrack From</b> and <b>Audio Offset</b> for you the first time it loads.\n\n" +
+                $"<b>SOUNDTRACK FROM:</b>\n" +
+                $"Choose which atom that your music will be playing through.\n\n" +
+                $"<b>SYNC STRATEGY:</b>\n" +
                 $"<b>Change Time Scale</b> - if the audio is behind or ahead, then slow down or speed up the time scale until it is within {DriftStopCorrectIfUnder:0.##} seconds. (Recommended)\n\n" +
                 $"<b>Set Audio Time</b> - if the audio is behind or ahead, just set the audio playback time to the animation time. (May sound choppy)\n\n" +
                 $"<b>Change Audio Pitch</b> - if the audio is behind or ahead, speed up or slow down the audio pitch until it catches up. (I think this sounds awful)\n\n" +
-                $"Options:\n" +
+                $"<b>AUDIO OFFSET</b>:\n" +
+                $"Offset the audio from the start of the animation timeline.  For example, if your audio starts 1 second into your animation, set this to 1.\n\n" +
+                $"<b>OPTIONS</b>:\n" +
                 $"<b>Jump Audio Time If Way Off</b> - if the audio is behind or ahead more that {ForceJumpAudioTimeIfOver} second, just jump the playhead to the correct time even if you have another strategy selected.  This also is nice if you scrub the <b>Scene Animation</b> playhead.  The audio will jump to the right time.\n\n" +
                 $"<b>Stop Audio When Animation Stops</b> - if you click 'Stop Animation' try to also pause / resume the related audio\n\n"
                 ;
@@ -97,7 +101,7 @@ namespace LFE
             instructionUI.height = 1200;
 
             var sourceChoices = AtomsWithAudioSource.Concat(new[] { String.Empty }).ToList();
-            SyncWithAudioPlayingThrough = new JSONStorableStringChooser("Sync With", sourceChoices, String.Empty, "Sync With", (string val) =>
+            SyncWithAudioPlayingThrough = new JSONStorableStringChooser("Soundtrack From", sourceChoices, String.Empty, "Soundtrack From", (string val) =>
             {
                 // clear the cached audiosource
                 _sourceCached = null;
@@ -277,7 +281,10 @@ namespace LFE
 #endif
                 }
             }
-            UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
+            if (IsUiActive())
+            {
+                UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
+            }
         }
 
         private void HandleAudioTimeJump()
@@ -296,7 +303,10 @@ namespace LFE
                 Source.time = newTime;
                 currentAdjustment = 0;
             }
-            UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
+            if (IsUiActive())
+            {
+                UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
+            }
         }
 
         private void HandleTimescale()
@@ -319,7 +329,7 @@ namespace LFE
 #endif
 
                 currentAdjustment += adjustBy;
-                TimeControl.singleton.currentScale += adjustBy;
+                TimeControl.singleton.currentScale = originalTimescale + currentAdjustment;
 
             }
             else if (shouldStopAdjustment)
@@ -332,26 +342,25 @@ namespace LFE
             }
             else if (shouldChangeAdjustmentStrength)
             {
-                var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
                 if (currentDriftAbsolute > previousDriftAbsolute)
                 {
+                    var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
                     // things are getting worse!
                     currentAdjustment += adjustBy;
-                    TimeControl.singleton.currentScale += adjustBy;
+                    TimeControl.singleton.currentScale = originalTimescale + currentAdjustment;
 #if LFE_DEBUG
                     SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
                 }
             }
-            UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
+            if (IsUiActive())
+            {
+                UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
+            }
         }
 
         public void UpdateDebugInfo(float animationTime, float drift, float adjustment, float timescale, float pitch)
         {
-            if (!IsUiActive())
-            {
-                return;
-            }
             debugCounter += Time.deltaTime;
             if (debugCounter > 0.25f)
             {
