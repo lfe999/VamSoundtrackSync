@@ -6,11 +6,33 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
 
-namespace LFE {
+namespace LFE
+{
 
-	public class SoundtrackSync : MVRScript {
+    public class SoundtrackSync : MVRScript
+    {
 
-        AudioSource Source;
+        private AudioSource _sourceCached;
+        private AudioSource Source
+        {
+            get
+            {
+                if (_sourceCached == null)
+                {
+                    SuperController.LogMessage($"cache miss");
+                    var selectedUid = SyncWithAudioPlayingThrough.val;
+                    if(!string.IsNullOrEmpty(selectedUid)) {
+                        var atom = SuperController.singleton.GetAtomByUid(selectedUid);
+                        if (atom != null)
+                        {
+                            // assume the first audio source in the Atom is what we want
+                            _sourceCached = atom.GetComponentInChildren<AudioSource>();
+                        }
+                    }
+                }
+                return _sourceCached;
+            }
+        }
 
         const string FIX_BY_TIME_SCALE = "Change Time Scale";
         const string FIX_BY_AUDIO_TIME_SET = "Set Audio Time";
@@ -22,11 +44,24 @@ namespace LFE {
             FIX_BY_AUDIO_PITCH
         };
 
+        private List<string> AtomsWithAudioSource
+        {
+            get
+            {
+                return containingAtom.transform.root
+                    .GetComponentsInChildren<AudioSource>()
+                    .Select(src => src.GetComponentInParent<Atom>()?.uid)
+                    .Where(uid => !string.IsNullOrEmpty(uid))
+                    .ToList();
+            }
+        }
+
         const float DriftCorrectIfOver = 0.05f;
         const float DriftStopCorrectIfUnder = 0.01f;
         const float ForceJumpAudioTimeIfOver = 1.0f;
         const float AdjustmentAmount = 0.05f;
 
+        private JSONStorableStringChooser SyncWithAudioPlayingThrough;
         private JSONStorableStringChooser Strategy;
         private JSONStorableFloat SoundtrackOffset;
         private JSONStorableString DebugText;
@@ -37,11 +72,13 @@ namespace LFE {
         float originalPitch = 0f;
         float originalTimescale = 0f;
 
-        public bool IsUiActive() {
+        public bool IsUiActive()
+        {
             return DebugTextUi?.isActiveAndEnabled ?? false;
         }
 
-        public override void Init() {
+        public override void Init()
+        {
 
             var instructions =
                 $"Keep a <b>Scene Animation</b> in sync with an <b>AudioSource</b> soundtrack - good if you have some performance issues making things go out of sync.\n\n" +
@@ -59,22 +96,17 @@ namespace LFE {
             var instructionUI = CreateTextField(new JSONStorableString("_", instructions), rightSide: true);
             instructionUI.height = 1200;
 
-            Source = FindFirstAudioSource();
-            if(Source == null) {
-                SuperController.LogError("Could not find any audio sources on this atom. Open plugin panel for more instructions.");
+            var sourceChoices = AtomsWithAudioSource.Concat(new[] { String.Empty }).ToList();
+            SyncWithAudioPlayingThrough = new JSONStorableStringChooser("Sync With", sourceChoices, String.Empty, "Sync With", (string val) =>
+            {
+                // clear the cached audiosource
+                _sourceCached = null;
+            });
+            CreatePopup(SyncWithAudioPlayingThrough);
+            RegisterStringChooser(SyncWithAudioPlayingThrough);
 
-                var error =
-                    $"No audio sources were found on this atom.\n\n" +
-                    $"Put this on an atom that will be playing the audio for your Scene Animation.\n\n" +
-                    $"For example, put this on an AudioSource or RhythmAudioSource atom";
-                CreateTextField(new JSONStorableString("_error", error));
-                return;
-            }
-
-            originalPitch = Source.pitch;
-            originalTimescale = TimeControl.singleton.currentScale;
-
-            Strategy = new JSONStorableStringChooser("Sync Strategy", StrategyChoices, FIX_BY_TIME_SCALE, "Sync Strategy", (string val) => {
+            Strategy = new JSONStorableStringChooser("Sync Strategy", StrategyChoices, FIX_BY_TIME_SCALE, "Sync Strategy", (string val) =>
+            {
                 ResetStrategyDefaults();
             });
             CreatePopup(Strategy);
@@ -96,13 +128,104 @@ namespace LFE {
             DebugTextUi = CreateTextField(DebugText);
         }
 
-        public AudioSource FindFirstAudioSource() {
-            var audioSources = containingAtom.GetComponentsInChildren<AudioSource>();
-            if(audioSources.Length == 0) {
-                SuperController.LogError("no audio source found");
-                return null;
+        public void Start()
+        {
+            if (SyncWithAudioPlayingThrough.val == SyncWithAudioPlayingThrough.defaultVal)
+            {
+                SyncWithAudioPlayingThrough.val = GuessAudioSourceAtom();
+#if LFE_DEBUG
+                SuperController.LogMessage($"guessed atom: {SyncWithAudioPlayingThrough.val}");
+#endif
             }
-            return audioSources[0];
+
+            if (SoundtrackOffset.val == SoundtrackOffset.defaultVal)
+            {
+                SoundtrackOffset.val = GuessDefaultOffset();
+#if LFE_DEBUG
+                SuperController.LogMessage($"guessed offset: {SoundtrackOffset.val}");
+#endif
+            }
+
+            if (Source == null)
+            {
+                SuperController.LogError("Could not automatically find any audio sources. Open plugin panel for more instructions.");
+
+                var error =
+                    $"No audio sources were automatically found when looking through possible soundtracks in this scene.\n\n" +
+                    $"Select the atom that will be playing the main soundtrack audio for your Scene Animation.\n";
+                CreateTextField(new JSONStorableString("_error", error));
+                return;
+            }
+
+            originalPitch = Source.pitch;
+            originalTimescale = TimeControl.singleton.currentScale;
+
+        }
+
+        public IEnumerable<KeyValuePair<AnimationTimelineTrigger, TriggerActionDiscrete>> GetAudioStartTriggerActions()
+        {
+            var mam = SuperController.singleton.motionAnimationMaster;
+            // mam.triggers is protected all through the code so, find the actions through the JSON
+            var mamJSON = mam.GetJSON();
+            try
+            {
+                foreach (var triggerJSON in mamJSON["triggers"].AsArray.Cast<SimpleJSON.JSONClass>())
+                {
+                    var trigger = new AnimationTimelineTrigger();
+                    trigger.RestoreFromJSON(triggerJSON);
+                    foreach (var actionJSON in triggerJSON["startActions"].AsArray.Cast<SimpleJSON.JSONClass>())
+                    {
+                        var action = new TriggerActionDiscrete();
+                        action.RestoreFromJSON(actionJSON);
+
+                        if (action.audioClip != null)
+                        {
+                            yield return new KeyValuePair<AnimationTimelineTrigger, TriggerActionDiscrete>(trigger, action);
+                        }
+                    }
+                }
+            }
+            finally { }
+            yield break;
+        }
+
+        public float GuessDefaultOffset()
+        {
+            var atomUid = SyncWithAudioPlayingThrough.val;
+            if (string.IsNullOrEmpty(atomUid))
+            {
+                return 0;
+            }
+
+            var audioTriggersForAtom = GetAudioStartTriggerActions()
+                .Where(act => act.Value.receiverAtom.uid == atomUid)
+                .OrderByDescending(act => act.Value.audioClip.sourceClip.length)
+                .ToList();
+            if (audioTriggersForAtom.Count == 1)
+            {
+                return audioTriggersForAtom[0].Key.triggerStartTime;
+            }
+
+            return 0;
+        }
+
+        public string GuessAudioSourceAtom()
+        {
+            var audioTriggers = GetAudioStartTriggerActions()
+                .OrderByDescending(act => act.Value.audioClip.sourceClip.length)
+                .ToList();
+            if (audioTriggers.Count > 0)
+            {
+                return audioTriggers[0].Value.receiverAtom.uid;
+            }
+            else
+            {
+                if (containingAtom.GetComponentInChildren<AudioSource>() != null)
+                {
+                    return containingAtom.uid;
+                }
+            }
+            return String.Empty;
         }
 
         float currentAdjustment = 0f;
@@ -110,7 +233,8 @@ namespace LFE {
 
         float debugCounter = 0f;
 
-        private void HandleAudioPitch() {
+        private void HandleAudioPitch()
+        {
             var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
 
             var currentDrift = CurrentDrift();
@@ -121,7 +245,8 @@ namespace LFE {
             bool shouldStartAdjustment = !undergoingAdjustment && currentDriftAbsolute >= DriftCorrectIfOver;
             bool shouldStopAdjustment = undergoingAdjustment && currentDriftAbsolute <= DriftStopCorrectIfUnder;
             bool shouldChangeAdjustmentStrength = undergoingAdjustment && currentDriftAbsolute != previousDriftAbsolute;
-            if(shouldStartAdjustment) {
+            if (shouldStartAdjustment)
+            {
                 var adjustBy = Math.Sign(currentDrift) * -1 * AdjustmentAmount * Time.deltaTime;
 #if LFE_DEBUG
                 SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
@@ -131,34 +256,39 @@ namespace LFE {
                 Source.pitch += adjustBy;
 
             }
-            else if(shouldStopAdjustment) {
+            else if (shouldStopAdjustment)
+            {
                 Source.pitch = originalPitch;
                 currentAdjustment = 0;
 #if LFE_DEBUG
                 SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
 #endif
             }
-            else if(shouldChangeAdjustmentStrength) {
+            else if (shouldChangeAdjustmentStrength)
+            {
                 var adjustBy = Math.Sign(currentDrift) * -1 * AdjustmentAmount * Time.deltaTime;
-                if(currentDriftAbsolute > previousDriftAbsolute) {
+                if (currentDriftAbsolute > previousDriftAbsolute)
+                {
                     // things are getting worse! - increase our fixing
                     currentAdjustment += adjustBy;
                     Source.pitch += adjustBy;
 #if LFE_DEBUG
-                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+                    SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
                 }
             }
             UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
         }
 
-        private void HandleAudioTimeJump() {
+        private void HandleAudioTimeJump()
+        {
             var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
 
             var currentDrift = CurrentDrift();
             var currentDriftAbsolute = Math.Abs(currentDrift);
 
-            if(currentDriftAbsolute >= DriftCorrectIfOver * 0.5f) {
+            if (currentDriftAbsolute >= DriftCorrectIfOver * 0.5f)
+            {
                 var newTime = TargetAudioSourceTime();
 #if LFE_DEBUG
                 SuperController.LogMessage($"AUDIOJUMP audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} (over {DriftCorrectIfOver * 0.5f}) newTime = {newTime}");
@@ -169,7 +299,8 @@ namespace LFE {
             UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
         }
 
-        private void HandleTimescale() {
+        private void HandleTimescale()
+        {
             var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
 
             var currentDrift = CurrentDrift();
@@ -180,7 +311,8 @@ namespace LFE {
             bool shouldStartAdjustment = !undergoingAdjustment && currentDriftAbsolute >= DriftCorrectIfOver;
             bool shouldStopAdjustment = undergoingAdjustment && currentDriftAbsolute <= DriftStopCorrectIfUnder;
             bool shouldChangeAdjustmentStrength = undergoingAdjustment && currentDriftAbsolute != previousDriftAbsolute;
-            if(shouldStartAdjustment) {
+            if (shouldStartAdjustment)
+            {
                 var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
 #if LFE_DEBUG
                 SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
@@ -190,33 +322,39 @@ namespace LFE {
                 TimeControl.singleton.currentScale += adjustBy;
 
             }
-            else if(shouldStopAdjustment) {
+            else if (shouldStopAdjustment)
+            {
                 TimeControl.singleton.currentScale = originalTimescale;
                 currentAdjustment = 0;
 #if LFE_DEBUG
                 SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
 #endif
             }
-            else if(shouldChangeAdjustmentStrength) {
+            else if (shouldChangeAdjustmentStrength)
+            {
                 var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
-                if(currentDriftAbsolute > previousDriftAbsolute) {
+                if (currentDriftAbsolute > previousDriftAbsolute)
+                {
                     // things are getting worse!
                     currentAdjustment += adjustBy;
                     TimeControl.singleton.currentScale += adjustBy;
 #if LFE_DEBUG
-                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+                    SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
                 }
             }
             UpdateDebugInfo(animationTime, currentDrift, currentAdjustment, TimeControl.singleton.currentScale, Source.pitch);
         }
 
-        public void UpdateDebugInfo(float animationTime, float drift, float adjustment, float timescale, float pitch) {
-            if(!IsUiActive()) {
+        public void UpdateDebugInfo(float animationTime, float drift, float adjustment, float timescale, float pitch)
+        {
+            if (!IsUiActive())
+            {
                 return;
             }
             debugCounter += Time.deltaTime;
-            if(debugCounter > 0.25f) {
+            if (debugCounter > 0.25f)
+            {
                 string driftOverageText = drift > DriftCorrectIfOver ? "(over limit)" : "";
                 DebugText.val = $"animation time: {animationTime:0.###}\ndrift: {drift:0.###} {driftOverageText}\nadjustment: {adjustment}\ntime scale: {timescale}\npitch: {pitch}";
                 debugCounter = 0;
@@ -226,35 +364,46 @@ namespace LFE {
 
         float previousAnimationTime = -1f;
 
-		private void Update() {
+        private void Update()
+        {
 
-
-            if(SuperController.singleton.freezeAnimation) {
+            if (SuperController.singleton.freezeAnimation)
+            {
                 return;
             }
 
+            if (Source == null)
+            {
+                return;
+            }
 
             var strategy = Strategy.valNoCallback;
-            if(string.IsNullOrEmpty(strategy)) {
+            if (string.IsNullOrEmpty(strategy))
+            {
                 return;
             }
 
             var audioTime = Source.time;
             var animationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter();
 
-            if(previousAnimationTime == animationTime) {
+            if (previousAnimationTime == animationTime)
+            {
                 // animation is stopped
-                if(StopAudioIfAnimationStopped.val) {
+                if (StopAudioIfAnimationStopped.val)
+                {
                     Source.Pause();
                 }
                 return;
             }
 
-            if(!Source.isPlaying) {
-                if(StopAudioIfAnimationStopped.val && Source.time > 0) {
+            if (!Source.isPlaying)
+            {
+                if (StopAudioIfAnimationStopped.val && Source.time > 0)
+                {
                     Source.UnPause();
                 }
-                else {
+                else
+                {
                     Source.time = 0;
                     return;
                 }
@@ -262,17 +411,22 @@ namespace LFE {
 
             var currentDrift = CurrentDrift();
 
-            if(JumpAudioIfTooFar.val && Math.Abs(currentDrift) > ForceJumpAudioTimeIfOver) {
+            if (JumpAudioIfTooFar.val && Math.Abs(currentDrift) > ForceJumpAudioTimeIfOver)
+            {
                 HandleAudioTimeJump();
             }
-            else {
-                if(strategy == FIX_BY_AUDIO_PITCH) {
+            else
+            {
+                if (strategy == FIX_BY_AUDIO_PITCH)
+                {
                     HandleAudioPitch();
                 }
-                else if(strategy == FIX_BY_AUDIO_TIME_SET) {
+                else if (strategy == FIX_BY_AUDIO_TIME_SET)
+                {
                     HandleAudioTimeJump();
                 }
-                else if(strategy == FIX_BY_TIME_SCALE) {
+                else if (strategy == FIX_BY_TIME_SCALE)
+                {
                     HandleTimescale();
                 }
             }
@@ -281,8 +435,10 @@ namespace LFE {
             previousAnimationTime = animationTime;
         }
 
-        private void ResetStrategyDefaults() {
-            if(Source != null) {
+        private void ResetStrategyDefaults()
+        {
+            if (Source != null)
+            {
                 Source.pitch = originalPitch;
             }
             TimeControl.singleton.currentScale = originalTimescale;
@@ -293,18 +449,23 @@ namespace LFE {
             debugCounter = 0f;
         }
 
-        private float TargetAudioSourceTime() {
+        private float TargetAudioSourceTime()
+        {
             var target = 0f;
 
             var offsetAnimationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter() - SoundtrackOffset.val;
-            if(offsetAnimationTime < 0) {
+            if (offsetAnimationTime < 0)
+            {
                 target = 0f;
             }
-            else {
-                if(Source.loop) {
+            else
+            {
+                if (Source.loop)
+                {
                     target = offsetAnimationTime % Source.clip.length;
                 }
-                else {
+                else
+                {
                     target = Mathf.Min(offsetAnimationTime, Source.clip.length);
                 }
             }
@@ -314,11 +475,13 @@ namespace LFE {
             return target;
         }
 
-        private float CurrentDrift() {
+        private float CurrentDrift()
+        {
             return Source.time - TargetAudioSourceTime();
         }
 
-        private void OnDestroy() {
+        private void OnDestroy()
+        {
             ResetStrategyDefaults();
         }
     }
