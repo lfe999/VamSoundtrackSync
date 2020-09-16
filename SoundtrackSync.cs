@@ -193,24 +193,38 @@ namespace LFE
             yield break;
         }
 
-        public float GuessDefaultOffset()
-        {
+        public KeyValuePair<AnimationTimelineTrigger, TriggerActionDiscrete> GuessAudioTriggerEvent() {
             var atomUid = SyncWithAudioPlayingThrough.val;
             if (string.IsNullOrEmpty(atomUid))
             {
-                return 0;
+                return new KeyValuePair<AnimationTimelineTrigger, TriggerActionDiscrete>();
             }
-
-            var audioTriggersForAtom = GetAudioStartTriggerActions()
+            return GetAudioStartTriggerActions()
                 .Where(act => act.Value.receiverAtom.uid == atomUid)
                 .OrderByDescending(act => act.Value.audioClip.sourceClip.length)
-                .ToList();
-            if (audioTriggersForAtom.Count == 1)
-            {
-                return audioTriggersForAtom[0].Key.triggerStartTime;
-            }
+                .FirstOrDefault();
+        }
 
-            return 0;
+        public float GuessDefaultOffset()
+        {
+            var firstTrigger = GuessAudioTriggerEvent();
+            return firstTrigger.Key?.triggerStartTime ?? 0;
+        }
+
+        public NamedAudioClip GuessNamedAudioClip() {
+            var firstTrigger = GuessAudioTriggerEvent();
+            return firstTrigger.Value?.audioClip ?? null;
+        }
+
+        public AudioClip GetSourceClip() {
+            AudioClip clip = null;
+            if(Source != null && Source.clip != null) {
+                clip = Source.clip;
+            }
+            else {
+                clip = GuessNamedAudioClip().sourceClip;
+            }
+            return clip;
         }
 
         public string GuessAudioSourceAtom()
@@ -253,7 +267,7 @@ namespace LFE
             {
                 var adjustBy = Math.Sign(currentDrift) * -1 * AdjustmentAmount * Time.deltaTime;
 #if LFE_DEBUG
-                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
 
                 currentAdjustment += adjustBy;
@@ -265,7 +279,7 @@ namespace LFE
                 Source.pitch = originalPitch;
                 currentAdjustment = 0;
 #if LFE_DEBUG
-                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
+                SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
 #endif
             }
             else if (shouldChangeAdjustmentStrength)
@@ -277,7 +291,7 @@ namespace LFE
                     currentAdjustment += adjustBy;
                     Source.pitch += adjustBy;
 #if LFE_DEBUG
-                    SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+                    SuperController.LogMessage($"PITCH audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
                 }
             }
@@ -298,7 +312,7 @@ namespace LFE
             {
                 var newTime = TargetAudioSourceTime();
 #if LFE_DEBUG
-                SuperController.LogMessage($"AUDIOJUMP audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} (over {DriftCorrectIfOver * 0.5f}) newTime = {newTime}");
+                SuperController.LogMessage($"AUDIOJUMP audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} (over {DriftCorrectIfOver * 0.5f}) newTime = {newTime}");
 #endif
                 Source.time = newTime;
                 currentAdjustment = 0;
@@ -325,7 +339,7 @@ namespace LFE
             {
                 var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
 #if LFE_DEBUG
-                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
 
                 currentAdjustment += adjustBy;
@@ -337,7 +351,7 @@ namespace LFE
                 TimeControl.singleton.currentScale = originalTimescale;
                 currentAdjustment = 0;
 #if LFE_DEBUG
-                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
+                SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
 #endif
             }
             else if (shouldChangeAdjustmentStrength)
@@ -349,7 +363,7 @@ namespace LFE
                     currentAdjustment += adjustBy;
                     TimeControl.singleton.currentScale = originalTimescale + currentAdjustment;
 #if LFE_DEBUG
-                    SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {Source.clip.length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
+                    SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
                 }
             }
@@ -375,6 +389,7 @@ namespace LFE
 
         private void Update()
         {
+            try {
 
             if (SuperController.singleton.freezeAnimation)
             {
@@ -405,11 +420,18 @@ namespace LFE
                 return;
             }
 
+            var currentDrift = CurrentDrift();
+
             if (!Source.isPlaying)
             {
-                if (StopAudioIfAnimationStopped.val && Source.time > 0)
+                if (StopAudioIfAnimationStopped.val && Mathf.Abs(currentDrift) > 0)
                 {
-                    Source.UnPause();
+                    if(SuperController.singleton.motionAnimationMaster.isActiveAndEnabled) {
+                        var firstTrigger = GuessAudioTriggerEvent();
+                        if(firstTrigger.Value != null) {
+                            firstTrigger.Value.Trigger();
+                        }
+                    }
                 }
                 else
                 {
@@ -417,8 +439,6 @@ namespace LFE
                     return;
                 }
             }
-
-            var currentDrift = CurrentDrift();
 
             if (JumpAudioIfTooFar.val && Math.Abs(currentDrift) > ForceJumpAudioTimeIfOver)
             {
@@ -442,6 +462,11 @@ namespace LFE
 
             previousDrift = currentDrift;
             previousAnimationTime = animationTime;
+
+            }
+            catch(Exception e) {
+                SuperController.LogError(e.ToString());
+            }
         }
 
         private void ResetStrategyDefaults()
@@ -469,13 +494,19 @@ namespace LFE
             }
             else
             {
-                if (Source.loop)
-                {
-                    target = offsetAnimationTime % Source.clip.length;
+                var clip = GetSourceClip();
+                if(clip != null) {
+                    if (Source.loop)
+                    {
+                        target = offsetAnimationTime % clip.length;
+                    }
+                    else
+                    {
+                        target = Mathf.Min(offsetAnimationTime, clip.length);
+                    }
                 }
-                else
-                {
-                    target = Mathf.Min(offsetAnimationTime, Source.clip.length);
+                else {
+                    target = offsetAnimationTime;
                 }
             }
 #if LFE_TRACE
