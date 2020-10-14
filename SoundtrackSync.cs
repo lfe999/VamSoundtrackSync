@@ -222,7 +222,10 @@ namespace LFE
                 clip = Source.clip;
             }
             else {
-                clip = GuessNamedAudioClip().sourceClip;
+                var guessedClip = GuessNamedAudioClip();
+                if(guessedClip != null) {
+                    clip = guessedClip.sourceClip;
+                }
             }
             return clip;
         }
@@ -398,6 +401,10 @@ namespace LFE
 
             if (Source == null)
             {
+                return;
+            }
+
+            if(GetSourceClip() == null) {
                 return;
             }
 
