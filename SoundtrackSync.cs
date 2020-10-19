@@ -68,6 +68,7 @@ namespace LFE
         private JSONStorableBool JumpAudioIfTooFar;
         private JSONStorableBool StopAudioIfAnimationStopped;
         private UIDynamicTextField DebugTextUi;
+        private JSONStorableFloat TargetTimescale;
 
         float originalPitch = 0f;
         float originalTimescale = 0f;
@@ -92,10 +93,16 @@ namespace LFE
                 $"<b>Change Audio Pitch</b> - if the audio is behind or ahead, speed up or slow down the audio pitch until it catches up. (I think this sounds awful)\n\n" +
                 $"<b>AUDIO OFFSET</b>:\n" +
                 $"Offset the audio from the start of the animation timeline.  For example, if your audio starts 1 second into your animation, set this to 1.\n\n" +
+                $"<b>TARGET TIMESCALE</b>:\n" +
+                $"Have a mocap that you want to play a different song than from the original?  This will let you set the target timescale for calculate different target time for different song.\n\n" +
                 $"<b>OPTIONS</b>:\n" +
                 $"<b>Jump Audio Time If Way Off</b> - if the audio is behind or ahead more that {ForceJumpAudioTimeIfOver} second, just jump the playhead to the correct time even if you have another strategy selected.  This also is nice if you scrub the <b>Scene Animation</b> playhead.  The audio will jump to the right time.\n\n" +
                 $"<b>Stop Audio When Animation Stops</b> - if you click 'Stop Animation' try to also pause / resume the related audio\n\n"
                 ;
+
+            // TODO: Make sure there is only one of these plugins active
+
+            // TODO: Disable any AnimationSpeed sync plugins that are in the scene
 
             var instructionUI = CreateTextField(new JSONStorableString("_", instructions), rightSide: true);
             instructionUI.height = 1200;
@@ -119,6 +126,10 @@ namespace LFE
             SoundtrackOffset = new JSONStorableFloat("Audio Offset", 0, -60, 60, constrain: false, interactable: true);
             CreateSlider(SoundtrackOffset);
             RegisterFloat(SoundtrackOffset);
+
+            TargetTimescale = new JSONStorableFloat("Target Timescale", 1.0f, (float scale) => { TimeControl.singleton.currentScale = scale; }, 0.001f, 5.0f);
+            CreateSlider(TargetTimescale);
+            RegisterFloat(TargetTimescale);
 
             JumpAudioIfTooFar = new JSONStorableBool("Jump Audio Time If Way Off", true);
             CreateToggle(JumpAudioIfTooFar);
@@ -346,12 +357,12 @@ namespace LFE
 #endif
 
                 currentAdjustment += adjustBy;
-                TimeControl.singleton.currentScale = originalTimescale + currentAdjustment;
+                TimeControl.singleton.currentScale = TargetTimescale.val + currentAdjustment;
 
             }
             else if (shouldStopAdjustment)
             {
-                TimeControl.singleton.currentScale = originalTimescale;
+                TimeControl.singleton.currentScale = TargetTimescale.val;
                 currentAdjustment = 0;
 #if LFE_DEBUG
                 SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = 0");
@@ -364,7 +375,7 @@ namespace LFE
                     var adjustBy = Math.Sign(currentDrift) * AdjustmentAmount * Time.deltaTime * 10;
                     // things are getting worse!
                     currentAdjustment += adjustBy;
-                    TimeControl.singleton.currentScale = originalTimescale + currentAdjustment;
+                    TimeControl.singleton.currentScale = TargetTimescale.val + currentAdjustment;
 #if LFE_DEBUG
                     SuperController.LogMessage($"TIMESCALE audioTime = {Source.time} audioMax = {GetSourceClip().length} animationTime = {animationTime} drift = {currentDriftAbsolute} adjustment = {adjustBy}");
 #endif
@@ -494,7 +505,7 @@ namespace LFE
         {
             var target = 0f;
 
-            var offsetAnimationTime = SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter() - SoundtrackOffset.val;
+            var offsetAnimationTime = (SuperController.singleton.motionAnimationMaster.GetCurrentTimeCounter() - SoundtrackOffset.val) / TargetTimescale.val;
             if (offsetAnimationTime < 0)
             {
                 target = 0f;
